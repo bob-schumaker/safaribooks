@@ -328,7 +328,16 @@ class SafariBooks:
                 self.display.exit("Login: unable to find `cookies.json` file.\n"
                                   "    Please use the `--cred` or `--login` options to perform the login.")
 
-            self.session.cookies.update(json.load(open(COOKIES_FILE)))
+            cookie_data = json.load(open(COOKIES_FILE))
+            # If the cookies are in a list, assume that each entry is a dict
+            # that has, at least, name and value keys. For example, the
+            # output of "EatThisCookie" in Chrome.
+            if isinstance(cookie_data, list):
+                for cookie in cookie_data:
+                    self.session.cookies.set(cookie["name"], cookie["value"])
+            else:
+                self.session.cookies.update(cookie_data)
+            
 
         else:
             self.display.info("Logging into Safari Books Online...", state=True)
