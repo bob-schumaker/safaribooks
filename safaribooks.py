@@ -18,7 +18,7 @@ from multiprocessing import Process, Queue, Value
 from urllib.parse import urljoin, urlparse, parse_qs, quote_plus
 
 
-PATH = os.path.dirname(os.path.realpath(__file__))
+PATH = os.environ.get("SAFARIBOOKS_PATH") or os.path.dirname(os.path.realpath(__file__))
 COOKIES_FILE = os.path.join(PATH, "cookies.json")
 
 ORLY_BASE_HOST = "oreilly.com"  # PLEASE INSERT URL HERE
@@ -1064,7 +1064,7 @@ class SafariBooks:
 
 
 # MAIN
-if __name__ == "__main__":
+def main():
     arguments = argparse.ArgumentParser(prog="safaribooks.py",
                                         description="Download and generate an EPUB of your favorite books"
                                                     " from Safari Books Online.",
@@ -1131,3 +1131,7 @@ if __name__ == "__main__":
     SafariBooks(args_parsed)
     # Hint: do you want to download more then one book once, initialized more than one instance of `SafariBooks`...
     sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
