@@ -1048,6 +1048,9 @@ class SafariBooks:
                     self.parse_html(self.get_html(next_chapter["content"]), first_page)
                 )
 
+            if self.args.pause and len(self.chapters_queue) == 1:
+                time.sleep(2.5)
+
             self.display.state(len_books, len_books - len(self.chapters_queue))
 
     def _thread_download_css(self, url):
