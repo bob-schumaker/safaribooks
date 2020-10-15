@@ -10,6 +10,7 @@ import getpass
 import logging
 import argparse
 import requests
+import time
 import traceback
 from html import escape
 from random import random
@@ -662,10 +663,6 @@ class SafariBooks:
         return None
 
     def parse_html(self, root, first_page=False):
-        if random() > 0.8:
-            if len(root.xpath("//div[@class='controls']/a/text()")):
-                self.display.exit(self.display.api_error(" "))
-
         book_content = root.xpath("//div[@id='sbo-rt-content']")
         if not len(book_content):
             self.display.exit(
@@ -856,6 +853,9 @@ class SafariBooks:
 
             else:
                 self.save_page_html(self.parse_html(self.get_html(next_chapter["content"]), first_page))
+
+            if self.args.pause and len(self.chapters_queue) == 1:
+                time.sleep(2.5)
 
             self.display.state(len_books, len_books - len(self.chapters_queue))
 
@@ -1085,6 +1085,10 @@ def main():
     arguments.add_argument(
         "--no-cookies", dest="no_cookies", action='store_true',
         help="Prevent your session data to be saved into `cookies.json` file."
+    )
+    arguments.add_argument(
+        "--pause", dest="pause", action='store_true',
+        help="Pause between each page fetch."
     )
     arguments.add_argument(
         "--kindle", dest="kindle", action='store_true',
