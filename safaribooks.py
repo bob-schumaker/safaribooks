@@ -673,7 +673,6 @@ class SafariBooks:
 
         if "rights" not in response:
             response["rights"] = ""
-
         for key, value in response.items():
             if value is None:
                 response[key] = "n/a"
