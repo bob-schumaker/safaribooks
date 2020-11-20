@@ -526,7 +526,7 @@ class SafariBooks:
             self.display.exit("Login: unable to reach Safari Books Online. Try again...")
 
     def check_login(self):
-        response = self.requests_provider(PROFILE_URL, perform_redirect=False)
+        response = self.requests_provider(PROFILE_URL, perform_redirect=True)
 
         if response == 0:
             self.display.exit("Login: unable to reach Safari Books Online. Try again...")
@@ -551,6 +551,9 @@ class SafariBooks:
         if "last_chapter_read" in response:
             del response["last_chapter_read"]
 
+        if "rights" not in response:
+            response["rights"] = ""
+            
         for key, value in response.items():
             if value is None:
                 response[key] = 'n/a'
