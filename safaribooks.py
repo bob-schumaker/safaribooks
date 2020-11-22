@@ -439,6 +439,9 @@ class SafariBooks:
                 **kwargs
             )
 
+            if self.args.pause:
+                time.sleep(0.1)
+
             self.handle_cookie_update(response.raw.headers.getlist("Set-Cookie"))
 
             self.display.last_request = (
@@ -856,9 +859,6 @@ class SafariBooks:
 
             else:
                 self.save_page_html(self.parse_html(self.get_html(next_chapter["content"]), first_page))
-
-            if self.args.pause and len(self.chapters_queue) == 1:
-                time.sleep(2.5)
 
             self.display.state(len_books, len_books - len(self.chapters_queue))
 
