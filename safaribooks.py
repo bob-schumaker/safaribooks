@@ -455,6 +455,7 @@ class SafariBooks:
         self.chapter_stylesheets = []
         self.css = []
         self.images = []
+        self.good_images = set()
 
         self.display.info(
             "Downloading book contents... (%s chapters)" % len(self.book_chapters),
@@ -986,6 +987,7 @@ class SafariBooks:
     def get(self):
         len_books = len(self.book_chapters)
 
+        switch_asset_base_url = None
         for _ in range(len_books):
             if not len(self.chapters_queue):
                 return
@@ -1089,38 +1091,53 @@ class SafariBooks:
     def _thread_download_images(self, url):
         image_name = url.split("/")[-1]
         image_path = os.path.join(self.images_path, image_name)
-        if os.path.isfile(image_path):
-            if (
-                not self.display.images_ad_info.value
-                and url not in self.images[: self.images.index(url)]
-            ):
-                self.display.info(
-                    (
-                        "File `%s` already exists.\n"
-                        "    If you want to download again all the images,\n"
-                        "    please delete the output directory '"
-                        + self.BOOK_PATH
-                        + "'"
-                        " and restart the program."
+        if image_name not in self.good_images:
+            if os.path.isfile(image_path):
+                if (
+                    not self.display.images_ad_info.value
+                    and url not in self.images[: self.images.index(url)]
+                ):
+                    self.display.info(
+                        (
+                            "File `%s` already exists.\n"
+                            "    If you want to download again all the images,\n"
+                            "    please delete the output directory '"
+                            + self.BOOK_PATH
+                            + "'"
+                            " and restart the program."
+                        )
+                        % image_name
                     )
-                    % image_name
-                )
-                self.display.images_ad_info.value = 1
+                    self.display.images_ad_info.value = 1
 
-        else:
-            response = self.requests_provider(
-                urljoin(SAFARI_BASE_URL, url), stream=True
-            )
-            if response == 0:
-                self.display.error(
-                    "Error trying to retrieve this image: %s\n    From: %s"
-                    % (image_name, url)
+            else:
+                if not url.startswith("http"):
+                    url = urljoin(SAFARI_BASE_URL, url)
+                response = self.requests_provider(
+                    url, stream=True
                 )
-                return
+                if response == 0:
+                    self.display.error(
+                        "Error trying to retrieve this image: %s\n    From: %s"
+                        % (image_name, url)
+                    )
+                    return
 
-            with open(image_path, "wb") as img:
-                for chunk in response.iter_content(1024):
-                    img.write(chunk)
+                try_again = False
+                good_dog = False
+                with open(image_path, "wb") as img:
+                    for chunk in response.iter_content(1024):
+                        if not good_dog:
+                            check = "".join([chr(int(b)) for b in chunk[:16]])
+                            if "Not Found" in check or "html" in check:
+                                try_again = True
+                                break
+                            good_dog = True
+                        img.write(chunk)
+                if try_again:
+                    os.remove(image_path)
+                else:
+                    self.good_images.add(image_name)
 
         self.images_done_queue.put(1)
         self.display.state(len(self.images), self.images_done_queue.qsize())
