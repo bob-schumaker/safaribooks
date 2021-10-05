@@ -9,7 +9,7 @@ import pathlib
 import getpass
 import logging
 import argparse
-from typing import Callable, List
+from typing import Callable, List, Tuple
 import requests
 import time
 import traceback
@@ -304,6 +304,16 @@ class ImageManager:
         """Keep track of an image reference."""
         self._image_base_urls.add(base_url)
 
+    def _split_ref(self, img_ref: str) -> Tuple[str, str]:
+        """Images all over the place."""
+        if "/" in img_ref:
+            image_path_bits = img_ref.split("/")
+        else:
+            image_path_bits = ["default", img_ref]
+        image_base = image_path_bits[0]
+        image_name = "/".join(image_path_bits[1:])
+        return (image_base, image_name)
+
     def local_ref(self, link: str) -> str:
         """Get the local reference to an image."""
         for base_url in self._image_base_urls:
@@ -315,14 +325,12 @@ class ImageManager:
                 link = link[chop].strip("/")
                 break
         image_path_bits = link.split("/")
-        image_name = "/".join(image_path_bits[1:])
+        _, image_name = self._split_ref(link)
         return image_name
 
     def download_image(self, img_ref: str) -> bool:
         """Figure out where the image is, and download it"""
-        image_path_bits = img_ref.split("/")
-        image_base = image_path_bits[0]
-        image_name = "/".join(image_path_bits[1:])
+        image_base, image_name = self._split_ref(img_ref)
         image_path = os.path.join(self.images_path, image_name)
         if os.path.isfile(image_path):
             if (
