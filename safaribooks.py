@@ -9,6 +9,7 @@ import pathlib
 import getpass
 import logging
 import argparse
+from typing import Callable, List
 import requests
 import time
 import traceback
@@ -276,6 +277,111 @@ class Display:
         return message
 
 
+class ImageManager:
+    """See if we can be a bit smarter about handling images."""
+
+    def __init__(self, requests_provider: Callable, display: Display) -> None:
+        self.requests_provider = requests_provider
+        self.display = display
+        self.images_path = ""
+        self._image_refs = set()
+        self._image_base_urls = set()
+        self._found_base_urls = {}
+
+    @property
+    def count(self) -> int:
+        return len(self._image_refs)
+
+    @property
+    def image_refs(self) -> List[str]:
+        return self._image_refs
+
+    def add_image_ref(self, img_ref: str) -> None:
+        """Keep track of an image reference."""
+        self._image_refs.add(img_ref)
+
+    def add_image_base_url(self, base_url: str) -> None:
+        """Keep track of an image reference."""
+        self._image_base_urls.add(base_url)
+
+    def local_ref(self, link: str) -> str:
+        """Get the local reference to an image."""
+        for base_url in self._image_base_urls:
+            if not link.startswith("http"):
+                chop = slice(len(SAFARI_BASE_URL) + 1, len(base_url))
+                base_url = base_url[chop]
+            if base_url in link:
+                chop = slice(len(base_url) + 1, len(link))
+                link = link[chop].strip("/")
+                break
+        image_path_bits = link.split("/")
+        image_name = "/".join(image_path_bits[1:])
+        return image_name
+
+    def download_image(self, img_ref: str) -> bool:
+        """Figure out where the image is, and download it"""
+        image_path_bits = img_ref.split("/")
+        image_base = image_path_bits[0]
+        image_name = "/".join(image_path_bits[1:])
+        image_path = os.path.join(self.images_path, image_name)
+        if os.path.isfile(image_path):
+            if (
+                not self.display.images_ad_info.value
+            ):
+                self.display.info(
+                    (
+                        "File `%s` already exists.\n"
+                        "    If you want to download again all the images,\n"
+                        "    please delete the output directory '"
+                        + self.display.output_dir
+                        + "'"
+                        " and restart the program."
+                    )
+                    % image_name
+                )
+                return False
+
+        image_dir = os.path.dirname(image_path)
+        if not os.path.exists(image_dir):
+            os.makedirs(image_dir)
+        check_urls = []
+        if image_base in self._found_base_urls:
+            check_urls.append(self._found_base_urls[image_base])
+        check_urls.extend(self._image_base_urls)
+        for base_url in check_urls:
+            if not img_ref.startswith("http"):
+                url = os.path.join(base_url, img_ref)
+            else:
+                url = img_ref
+            response = self.requests_provider(
+                url, stream=True
+            )
+            if response == 0:
+                self.display.error(
+                    "Error trying to retrieve this image: %s\n    From: %s"
+                    % (image_name, url)
+                )
+                return True
+
+            try_again = False
+            good_dog = False
+            with open(image_path, "wb") as img:
+                for chunk in response.iter_content(1024):
+                    if not good_dog:
+                        check = "".join([chr(int(b)) for b in chunk[:16]])
+                        if "Not Found" in check or "html" in check:
+                            try_again = True
+                            break
+                        good_dog = True
+                    img.write(chunk)
+            if try_again:
+                os.remove(image_path)
+            else:
+                self._found_base_urls[image_base] = base_url
+                break
+        return True
+
+
 class WinQueue(
     list
 ):  # TODO: error while use `process` in Windows: can't pickle _thread.RLock objects
@@ -416,6 +522,8 @@ class SafariBooks:
             if not args.no_cookies:
                 json.dump(self.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
 
+        self.image_manager = ImageManager(self.requests_provider, self.display)
+
         self.check_login()
 
         self.book_id = args.bookid
@@ -447,7 +555,6 @@ class SafariBooks:
         self.BOOK_PATH = os.path.join(books_dir, self.clean_book_title)
         self.display.set_output_dir(self.BOOK_PATH)
         self.css_path = ""
-        self.images_path = ""
         self.create_dirs()
 
         self.chapter_title = ""
@@ -494,7 +601,7 @@ class SafariBooks:
         self.collect_css()
         self.images_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info(
-            "Downloading book images... (%s files)" % len(self.images), state=True
+            "Downloading book images... (%s files)" % self.image_manager.count, state=True
         )
         self.collect_images()
 
@@ -722,7 +829,7 @@ class SafariBooks:
 
         file_ext = response.headers["Content-Type"].split("/")[-1]
         with open(
-            os.path.join(self.images_path, "default_cover." + file_ext), "wb"
+            os.path.join(self.image_manager.images_path, "default_cover." + file_ext), "wb"
         ) as i:
             for chunk in response.iter_content(1024):
                 i.write(chunk)
@@ -764,7 +871,7 @@ class SafariBooks:
                 if any(
                     x in link for x in ["cover", "images", "graphics"]
                 ) or self.is_image_link(link):
-                    image = link.split("/")[-1]
+                    image = self.image_manager.local_ref(link)
                     return "Images/" + image
 
                 return link.replace(".html", ".xhtml")
@@ -967,12 +1074,12 @@ class SafariBooks:
             os.makedirs(self.css_path)
             self.display.css_ad_info.value = 1
 
-        self.images_path = os.path.join(oebps, "Images")
-        if os.path.isdir(self.images_path):
-            self.display.log("Images directory already exists: %s" % self.images_path)
+        self.image_manager.images_path = os.path.join(oebps, "Images")
+        if os.path.isdir(self.image_manager.images_path):
+            self.display.log("Images directory already exists: %s" % self.image_manager.images_path)
 
         else:
-            os.makedirs(self.images_path)
+            os.makedirs(self.image_manager.images_path)
             self.display.images_ad_info.value = 1
 
     def save_page_html(self, contents):
@@ -987,7 +1094,6 @@ class SafariBooks:
     def get(self):
         len_books = len(self.book_chapters)
 
-        switch_asset_base_url = None
         for _ in range(len_books):
             if not len(self.chapters_queue):
                 return
@@ -1089,58 +1195,10 @@ class SafariBooks:
 
 
     def _thread_download_images(self, url):
-        image_name = url.split("/")[-1]
-        image_path = os.path.join(self.images_path, image_name)
-        if image_name not in self.good_images:
-            if os.path.isfile(image_path):
-                if (
-                    not self.display.images_ad_info.value
-                    and url not in self.images[: self.images.index(url)]
-                ):
-                    self.display.info(
-                        (
-                            "File `%s` already exists.\n"
-                            "    If you want to download again all the images,\n"
-                            "    please delete the output directory '"
-                            + self.BOOK_PATH
-                            + "'"
-                            " and restart the program."
-                        )
-                        % image_name
-                    )
-                    self.display.images_ad_info.value = 1
-
-            else:
-                if not url.startswith("http"):
-                    url = urljoin(SAFARI_BASE_URL, url)
-                response = self.requests_provider(
-                    url, stream=True
-                )
-                if response == 0:
-                    self.display.error(
-                        "Error trying to retrieve this image: %s\n    From: %s"
-                        % (image_name, url)
-                    )
-                    return
-
-                try_again = False
-                good_dog = False
-                with open(image_path, "wb") as img:
-                    for chunk in response.iter_content(1024):
-                        if not good_dog:
-                            check = "".join([chr(int(b)) for b in chunk[:16]])
-                            if "Not Found" in check or "html" in check:
-                                try_again = True
-                                break
-                            good_dog = True
-                        img.write(chunk)
-                if try_again:
-                    os.remove(image_path)
-                else:
-                    self.good_images.add(image_name)
-
+        if self.image_manager.download_image(url):
+            self.display.images_ad_info.value = 1
         self.images_done_queue.put(1)
-        self.display.state(len(self.images), self.images_done_queue.qsize())
+        self.display.state(self.image_manager.count, self.images_done_queue.qsize())
 
     def _start_multiprocessing(self, operation, full_queue):
         if len(full_queue) > 5:
@@ -1174,12 +1232,11 @@ class SafariBooks:
         self.display.state_status.value = -1
 
         # "self._start_multiprocessing" seems to cause problem. Switching to mono-thread download.
-        for image_url in self.images:
+        for image_url in self.image_manager.image_refs:
             self._thread_download_images(image_url)
 
     def create_content_opf(self):
         self.css = next(os.walk(self.css_path))[2]
-        self.images = next(os.walk(self.images_path))[2]
 
         manifest = []
         spine = []
@@ -1193,15 +1250,19 @@ class SafariBooks:
             )
             spine.append('<itemref idref="{0}"/>'.format(item_id))
 
-        for i in set(self.images):
-            dot_split = i.split(".")
-            head = "img_" + escape("".join(dot_split[:-1]))
-            extension = dot_split[-1]
-            manifest.append(
-                '<item id="{0}" href="Images/{1}" media-type="image/{2}" />'.format(
-                    head, i, "jpeg" if "jp" in extension else extension
+        for root, _, files in os.walk(self.image_manager.images_path):
+            chop = slice(len(self.image_manager.images_path) + 1, len(root))
+            root = root[chop]
+            for name in files:
+                i = os.path.join(root, name)
+                dot_split = i.split(".")
+                head = "img_" + escape("".join(dot_split[:-1]))
+                extension = dot_split[-1]
+                manifest.append(
+                    '<item id="{0}" href="Images/{1}" media-type="image/{2}" />'.format(
+                        head, i, "jpeg" if "jp" in extension else extension
+                    )
                 )
-            )
 
         for i in range(len(self.css)):
             manifest.append(
