@@ -376,8 +376,8 @@ class ImageManager:
             with open(image_path, "wb") as img:
                 for chunk in response.iter_content(1024):
                     if not good_dog:
-                        check = "".join([chr(int(b)) for b in chunk[:16]])
-                        if "Not Found" in check or "html" in check:
+                        check = "".join([chr(int(b)) for b in chunk[:128]]).lower()
+                        if "not found" in check or "html" in check:
                             try_again = True
                             break
                         good_dog = True
