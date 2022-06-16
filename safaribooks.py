@@ -317,7 +317,7 @@ class ImageManager:
     def local_ref(self, link: str) -> str:
         """Get the local reference to an image."""
         for base_url in self._image_base_urls:
-            if not link.startswith("http"):
+            if not link.startswith("http:") and not link.startswith("https:"):
                 chop = slice(len(SAFARI_BASE_URL) + 1, len(base_url))
                 base_url = base_url[chop]
             if base_url in link:
@@ -357,7 +357,7 @@ class ImageManager:
             check_urls.append(self._found_base_urls[image_base])
         check_urls.extend(self._image_base_urls)
         for base_url in check_urls:
-            if not img_ref.startswith("http"):
+            if not img_ref.startswith("http:") and not img_ref.startswith("https:"):
                 url = os.path.join(base_url, img_ref)
             else:
                 url = img_ref
