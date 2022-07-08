@@ -569,7 +569,6 @@ class SafariBooks:
         self.filename = ""
         self.chapter_stylesheets = []
         self.css = []
-        self.images = []
         self.good_images = set()
 
         self.display.info(
@@ -1121,10 +1120,10 @@ class SafariBooks:
             if "images" in next_chapter and len(next_chapter["images"]):
                 for img_url in next_chapter['images']:
                     if api_v2_detected:
-                        self.images.append(asset_base_url + '/' + img_url)
+                        self.image_manager.add_image_base_url(asset_base_url)
                     else:
-                        self.images.append(urljoin(next_chapter['asset_base_url'], img_url))
-
+                        self.image_manager.add_image_base_url(next_chapter['asset_base_url'])
+                    self.image_manager.add_image_ref(img_url)
 
             # Stylesheets
             self.chapter_stylesheets = []
