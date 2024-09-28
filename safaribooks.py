@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlparse, parse_qs, quote_plus
 
 
 PATH = os.environ.get("SAFARIBOOKS_PATH") or os.path.dirname(os.path.realpath(__file__))
-COOKIES_FILE = os.path.join(PATH, "cookies.json")
+COOKIES_FILE = os.environ.get("SAFARICOOKIES_PATH") or os.path.join(PATH, "cookies.json")
 
 ORLY_BASE_HOST = "oreilly.com"  # PLEASE INSERT URL HERE
 
@@ -63,8 +63,6 @@ class Display:
         self.logger.addHandler(logs_handler)
 
         self.columns, _ = shutil.get_terminal_size()
-
-        self.logger.info("** Welcome to SafariBooks! **")
 
         self.book_ad_info = False
         self.css_ad_info = Value("i", 0)
@@ -496,8 +494,6 @@ class SafariBooks:
     def __init__(self, args):
         self.args = args
         self.display = Display("info_%s.log" % escape(args.bookid))
-        self.display.intro()
-
         self.session = requests.Session()
         if USE_PROXY:  # DEBUG
             self.session.proxies = PROXIES
@@ -506,6 +502,7 @@ class SafariBooks:
         self.session.headers.update(self.HEADERS)
 
         self.jwt = {}
+        self.etag = None
 
         if not args.cred:
             if not os.path.isfile(COOKIES_FILE):
@@ -532,11 +529,15 @@ class SafariBooks:
 
         self.image_manager = ImageManager(self.requests_provider, self.display)
 
-        self.check_login()
+        # self.check_login()
 
         self.book_id = args.bookid
         self.api_url = self.API_TEMPLATE.format(self.book_id)
 
+    def get_book(self) -> None:
+        """Actually get the book."""
+        self.logger.info("** Welcome to SafariBooks! **")
+        self.display.intro()
         self.display.info("Retrieving book info...")
         self.book_info = self.get_book_info()
         self.display.book_info(self.book_info)
@@ -577,7 +578,7 @@ class SafariBooks:
         )
         self.BASE_HTML = (
             self.BASE_01_HTML
-            + (self.KINDLE_HTML if not args.kindle else "")
+            + (self.KINDLE_HTML if not self.args.kindle else "")
             + self.BASE_02_HTML
         )
 
@@ -616,13 +617,13 @@ class SafariBooks:
         self.display.info("Creating EPUB file...", state=True)
         self.create_epub()
 
-        if not args.no_cookies:
+        if not self.args.no_cookies:
             json.dump(self.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
 
         self.display.done(os.path.join(self.BOOK_PATH, self.book_id + ".epub"))
         self.display.unregister()
 
-        if not self.display.in_error and not args.log:
+        if not self.display.in_error and not self.args.log:
             os.remove(self.display.log_file)
 
     def handle_cookie_update(self, set_cookie_headers):
@@ -713,6 +714,7 @@ class SafariBooks:
             self.display.exit(
                 "Login: unable to perform auth to Safari Books Online.\n    Try again..."
             )
+            return
 
         if response.status_code != 200:  # TODO To be reviewed
             try:
@@ -779,6 +781,8 @@ class SafariBooks:
         response = self.requests_provider(self.api_url)
         if response == 0:
             self.display.exit("API: unable to retrieve book info.")
+
+        self.etag = response.headers.get("etag")
 
         response = response.json()
         if not isinstance(response, dict) or len(response.keys()) == 1:
@@ -1097,7 +1101,7 @@ class SafariBooks:
                 "utf-8", "xmlcharrefreplace"
             )
         )
-        self.display.log("Created: %s" % self.filename)
+        # self.display.log("Created: %s" % self.filename)
 
     def get(self):
         len_books = len(self.book_chapters)
@@ -1510,7 +1514,8 @@ def main():
                 "invalid option: `--no-cookies` is valid only if you use the `--cred` option"
             )
 
-    SafariBooks(args_parsed)
+    sb = SafariBooks(args_parsed)
+    sb.get_book()
     # Hint: do you want to download more then one book once, initialized more than one instance of `SafariBooks`...
     sys.exit(0)
 
