@@ -9,7 +9,7 @@ import pathlib
 import getpass
 import logging
 import argparse
-from typing import Callable, List, Tuple
+from typing import Callable, List, Tuple, Union
 import requests
 import time
 import traceback
@@ -64,7 +64,7 @@ class Display:
 
         self.columns, _ = shutil.get_terminal_size()
 
-        self.book_ad_info = False
+        self.book_ad_info: Union[int, bool] = False
         self.css_ad_info = Value("i", 0)
         self.images_ad_info = Value("i", 0)
         self.last_request = (None,)
@@ -153,7 +153,7 @@ class Display:
         output = (
             self.SH_YELLOW
             + (
-                """
+                r"""
        ____     ___         _     
       / __/__ _/ _/__ _____(_)    
      _\ \/ _ `/ _/ _ `/ __/ /     
@@ -415,6 +415,9 @@ class SafariBooks:
         "{0}\n"
         '<style type="text/css">'
         "body{{margin:1em;background-color:transparent!important;}}"
+    )
+
+    SBO_RT_CONTENT = (
         "#sbo-rt-content *{{text-indent:0pt!important;}}#sbo-rt-content .bq{{margin-right:1em!important;}}"
     )
 
@@ -536,7 +539,7 @@ class SafariBooks:
 
     def get_book(self) -> None:
         """Actually get the book."""
-        self.logger.info("** Welcome to SafariBooks! **")
+        self.display.logger.info("** Welcome to SafariBooks! **")
         self.display.intro()
         self.display.info("Retrieving book info...")
         self.book_info = self.get_book_info()
@@ -576,9 +579,11 @@ class SafariBooks:
             "Downloading book contents... (%s chapters)" % len(self.book_chapters),
             state=True,
         )
+        # If we're doing Kindle, don't include the "base" sbo-rt-content class
         self.BASE_HTML = (
             self.BASE_01_HTML
-            + (self.KINDLE_HTML if not self.args.kindle else "")
+            + (self.SBO_RT_CONTENT if not self.args.kindle else "")
+            + (self.KINDLE_HTML if self.args.kindle else "")
             + self.BASE_02_HTML
         )
 
@@ -851,10 +856,11 @@ class SafariBooks:
     def get_html(self, url):
         response = self.requests_provider(url)
         if response == 0 or response.status_code != 200:
-            self.display.exit(
+            self.display.error(
                 "Crawler: error trying to retrieve this page: %s (%s)\n    From: %s"
                 % (self.filename, self.chapter_title, url)
             )
+            return None
 
         root = None
         try:
@@ -1163,9 +1169,11 @@ class SafariBooks:
                     self.display.book_ad_info = 2
 
             else:
-                self.save_page_html(
-                    self.parse_html(self.get_html(next_chapter["content"]), first_page)
-                )
+                page = self.get_html(next_chapter["content"])
+                if page is not None:
+                    self.save_page_html(
+                        self.parse_html(page, first_page)
+                    )
 
             self.display.state(len_books, len_books - len(self.chapters_queue))
 
