@@ -9,7 +9,7 @@ import pathlib
 import getpass
 import logging
 import argparse
-from typing import Callable, List, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 import requests
 import time
 import traceback
@@ -19,9 +19,10 @@ from lxml import html, etree
 from multiprocessing import Process, Queue, Value
 from urllib.parse import urljoin, urlparse, parse_qs, quote_plus
 
-
 PATH = os.environ.get("SAFARIBOOKS_PATH") or os.path.dirname(os.path.realpath(__file__))
-COOKIES_FILE = os.environ.get("SAFARICOOKIES_PATH") or os.path.join(PATH, "cookies.json")
+COOKIES_FILE = os.environ.get("SAFARICOOKIES_PATH") or os.path.join(
+    PATH, "cookies.json"
+)
 
 ORLY_BASE_HOST = "oreilly.com"  # PLEASE INSERT URL HERE
 
@@ -190,27 +191,32 @@ class Display:
             return "n/d"
 
     def book_info(self, info):
-        description = self.parse_description(
-            info.get("description", "Missing.")
-        ).replace("\n", " ")
+        custom_attributes = info.get("custom_attributes", {})
+        description = None
+        if "descriptions" in info:
+            for format in ("text/html", "text/plain"):
+                description = info["descriptions"].get(format)
+                if description:
+                    break
+        description = description or info.get("description") or "Missing."
         for t in [
             ("Title", info.get("title", "")),
             (
                 "Authors",
-                ", ".join(aut.get("name", "") for aut in info.get("authors", [])),
+                ", ".join(aut for aut in info.get("authors", [])),
             ),
             ("Identifier", info.get("identifier", "")),
-            ("ISBN", info.get("isbn", "")),
+            ("ISBN", info.get("product_id", "")),
             (
                 "Publishers",
-                ", ".join(pub.get("name", "") for pub in info.get("publishers", [])),
+                ", ".join(pub for pub in custom_attributes.get("publishers", [])),
             ),
             ("Rights", info.get("rights", "")),
             (
                 "Description",
                 description[:500] + "..." if len(description) >= 500 else description,
             ),
-            ("Release Date", info.get("issued", "")),
+            ("Release Date", custom_attributes.get("publication_date", "")),
             ("URL", info.get("web_url", "")),
         ]:
             self.info(
@@ -275,119 +281,6 @@ class Display:
         return message
 
 
-class ImageManager:
-    """See if we can be a bit smarter about handling images."""
-
-    def __init__(self, requests_provider: Callable, display: Display) -> None:
-        self.requests_provider = requests_provider
-        self.display = display
-        self.images_path = ""
-        self._image_refs = set()
-        self._image_base_urls = set()
-        self._found_base_urls = {}
-
-    @property
-    def count(self) -> int:
-        return len(self._image_refs)
-
-    @property
-    def image_refs(self) -> List[str]:
-        return self._image_refs
-
-    def add_image_ref(self, img_ref: str) -> None:
-        """Keep track of an image reference."""
-        self._image_refs.add(img_ref)
-
-    def add_image_base_url(self, base_url: str) -> None:
-        """Keep track of an image reference."""
-        self._image_base_urls.add(base_url)
-
-    def _split_ref(self, img_ref: str) -> Tuple[str, str]:
-        """Images all over the place."""
-        if "/" in img_ref:
-            image_path_bits = img_ref.split("/")
-        else:
-            image_path_bits = ["default", img_ref]
-        image_base = image_path_bits[0]
-        image_name = "/".join(image_path_bits[1:])
-        return (image_base, image_name)
-
-    def local_ref(self, link: str) -> str:
-        """Get the local reference to an image."""
-        for base_url in self._image_base_urls:
-            if not link.startswith("http:") and not link.startswith("https:"):
-                chop = slice(len(SAFARI_BASE_URL) + 1, len(base_url))
-                base_url = base_url[chop]
-            if base_url in link:
-                chop = slice(len(base_url) + 1, len(link))
-                link = link[chop].strip("/")
-                break
-        image_path_bits = link.split("/")
-        _, image_name = self._split_ref(link)
-        return image_name
-
-    def download_image(self, img_ref: str) -> bool:
-        """Figure out where the image is, and download it"""
-        image_base, image_name = self._split_ref(img_ref)
-        image_path = os.path.join(self.images_path, image_name)
-        if os.path.isfile(image_path):
-            if (
-                not self.display.images_ad_info.value
-            ):
-                self.display.info(
-                    (
-                        "File `%s` already exists.\n"
-                        "    If you want to download again all the images,\n"
-                        "    please delete the output directory '"
-                        + self.display.output_dir
-                        + "'"
-                        " and restart the program."
-                    )
-                    % image_name
-                )
-                return False
-
-        image_dir = os.path.dirname(image_path)
-        if not os.path.exists(image_dir):
-            os.makedirs(image_dir)
-        check_urls = []
-        if image_base in self._found_base_urls:
-            check_urls.append(self._found_base_urls[image_base])
-        check_urls.extend(self._image_base_urls)
-        for base_url in check_urls:
-            if not img_ref.startswith("http:") and not img_ref.startswith("https:"):
-                url = os.path.join(base_url, img_ref)
-            else:
-                url = img_ref
-            response = self.requests_provider(
-                url, stream=True
-            )
-            if response == 0:
-                self.display.error(
-                    "Error trying to retrieve this image: %s\n    From: %s"
-                    % (image_name, url)
-                )
-                return True
-
-            try_again = False
-            good_dog = False
-            with open(image_path, "wb") as img:
-                for chunk in response.iter_content(1024):
-                    if not good_dog:
-                        check = "".join([chr(int(b)) for b in chunk[:128]]).lower()
-                        if "not found" in check or "html" in check:
-                            try_again = True
-                            break
-                        good_dog = True
-                    img.write(chunk)
-            if try_again:
-                os.remove(image_path)
-            else:
-                self._found_base_urls[image_base] = base_url
-                break
-        return True
-
-
 class WinQueue(
     list
 ):  # TODO: error while use `process` in Windows: can't pickle _thread.RLock objects
@@ -402,7 +295,7 @@ class SafariBooks:
     LOGIN_URL = ORLY_BASE_URL + "/member/auth/login/"
     LOGIN_ENTRY_URL = SAFARI_BASE_URL + "/login/unified/?next=/home/"
 
-    API_TEMPLATE = SAFARI_BASE_URL + "/api/v1/book/{0}/"
+    API_TEMPLATE = SAFARI_BASE_URL + "/api/v2/epubs/urn:orm:book:{0}/files/"
 
     BASE_01_HTML = (
         "<!DOCTYPE html>\n"
@@ -417,9 +310,7 @@ class SafariBooks:
         "body{{margin:1em;background-color:transparent!important;}}"
     )
 
-    SBO_RT_CONTENT = (
-        "#sbo-rt-content *{{text-indent:0pt!important;}}#sbo-rt-content .bq{{margin-right:1em!important;}}"
-    )
+    SBO_RT_CONTENT = "#sbo-rt-content *{{text-indent:0pt!important;}}#sbo-rt-content .bq{{margin-right:1em!important;}}"
 
     KINDLE_HTML = (
         "#sbo-rt-content *{{word-wrap:break-word!important;"
@@ -489,7 +380,7 @@ class SafariBooks:
         "Referer": LOGIN_ENTRY_URL,
         "Upgrade-Insecure-Requests": "1",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/90.0.4430.212 Safari/537.36"
+        "Chrome/90.0.4430.212 Safari/537.36",
     }
 
     COOKIE_FLOAT_MAX_AGE_PATTERN = re.compile(r"(max-age=\d*\.\d*)", re.IGNORECASE)
@@ -530,8 +421,6 @@ class SafariBooks:
             if not args.no_cookies:
                 json.dump(self.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
 
-        self.image_manager = ImageManager(self.requests_provider, self.display)
-
         # self.check_login()
 
         self.book_id = args.bookid
@@ -545,16 +434,14 @@ class SafariBooks:
         self.book_info = self.get_book_info()
         self.display.book_info(self.book_info)
 
+        self.cover = False
         self.display.info("Retrieving book chapters...")
         self.book_chapters = self.get_book_chapters()
-
-        self.chapters_queue = self.book_chapters[:]
-
-        if len(self.book_chapters) > sys.getrecursionlimit():
-            sys.setrecursionlimit(len(self.book_chapters))
+        self.display.info("Retrieving book files...")
+        self.book_files = self.get_book_files()
 
         self.book_title = self.book_info["title"]
-        self.base_url = self.book_info["web_url"]
+        self.base_url = self.book_info["url"]
 
         self.clean_book_title = "".join(
             self.escape_dirname(self.book_title).split(",")[:2]
@@ -571,8 +458,6 @@ class SafariBooks:
 
         self.chapter_title = ""
         self.filename = ""
-        self.chapter_stylesheets = []
-        self.css = []
         self.good_images = set()
 
         self.display.info(
@@ -587,26 +472,10 @@ class SafariBooks:
             + self.BASE_02_HTML
         )
 
-        self.cover = False
+        self.css = []
+        self.image_queue = []
+        self.chapters_queue = self.book_chapters[:]
         self.get()
-        if not self.cover:
-            self.cover = self.get_default_cover() if "cover" in self.book_info else False
-            cover_html = self.parse_html(
-                html.fromstring(
-                    '<div id="sbo-rt-content"><img src="Images/{0}"></div>'.format(
-                        self.cover
-                    )
-                ),
-                True,
-            )
-
-            self.book_chapters = [
-                {"filename": "default_cover.xhtml", "title": "Cover"}
-            ] + self.book_chapters
-
-            self.filename = self.book_chapters[0]["filename"]
-            self.save_page_html(cover_html)
-
         self.css_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info(
             "Downloading book CSSs... (%s files)" % len(self.css), state=True
@@ -614,7 +483,7 @@ class SafariBooks:
         self.collect_css()
         self.images_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info(
-            "Downloading book images... (%s files)" % self.image_manager.count, state=True
+            "Downloading book images... (%s files)" % len(self.image_queue), state=True
         )
         self.collect_images()
         self.thread_download_fonts()
@@ -777,37 +646,82 @@ class SafariBooks:
         elif response.status_code != 200:
             self.display.exit("Authentication issue: unable to access profile page.")
 
-        elif "user_type\":\"Expired\"" in response.text:
+        elif 'user_type":"Expired"' in response.text:
             self.display.exit("Authentication issue: account subscription expired.")
 
         self.display.info("Successfully authenticated.", state=True)
 
     def get_book_info(self):
-        response = self.requests_provider(self.api_url)
+        #        response = self.requests_provider(self.api_url)
+        response = self.requests_provider(
+            f"{SAFARI_BASE_URL}/api/v2/epubs/urn:orm:book:{self.book_id}/"
+        )
         if response == 0:
             self.display.exit("API: unable to retrieve book info.")
 
         self.etag = response.headers.get("etag")
 
-        response = response.json()
-        if not isinstance(response, dict) or len(response.keys()) == 1:
+        book_info = response.json()
+        if not isinstance(book_info, dict) or len(book_info.keys()) == 1:
             self.display.exit(self.display.api_error(response))
 
-        if "last_chapter_read" in response:
-            del response["last_chapter_read"]
-
-        if "rights" not in response:
-            response["rights"] = ""
-        for key, value in response.items():
-            if value is None:
-                response[key] = "n/a"
-
-        return response
-
-    def get_book_chapters(self, page=1):
         response = self.requests_provider(
-            urljoin(self.api_url, "chapter/?page=%s" % page)
+            f"{SAFARI_BASE_URL}/search/api/search/?q={self.book_id}&type=article&type=book&type=shortcut&rows=100&language=en&language=ja&feature_flags=improveSearchFilters&tzOffset=8&aia_only=false&report=true&isTopics=false"
         )
+        if response == 0:
+            self.display.exit("API: unable to retrieve book info.")
+        response = response.json()
+        if (
+            not isinstance(response, dict)
+            or len(response.keys()) == 1
+            or "data" not in response
+            or not response["data"].get("products")
+        ):
+            self.display.exit(self.display.api_error(response))
+        book_info.update(response["data"]["products"][0])
+
+        if "last_chapter_read" in book_info:
+            del book_info["last_chapter_read"]
+
+        if "rights" not in book_info:
+            book_info["rights"] = ""
+        for key, value in book_info.items():
+            if value is None:
+                book_info[key] = "n/a"
+
+        return book_info
+
+    def get_book_files(self) -> List:
+        result = []
+        url = self.book_info.get("files")
+        if url:
+            next_url = url + "?limit=100"
+            while next_url:
+                response = self.requests_provider(next_url)
+                if response == 0:
+                    self.display.exit("API: unable to retrieve book files.")
+                response = response.json()
+                result.extend(response["results"])
+                next_url = response.get("next")
+        return result
+
+    def get_book_chapters(self, page: Optional[str] = None):
+        result = []
+        chapters_url = f"{SAFARI_BASE_URL}/api/v2/epub-chapters/?epub_identifier=urn:orm:book:{self.book_id}"
+        if chapters_url:
+            next_url = chapters_url
+            while next_url:
+                response = self.requests_provider(next_url)
+                if response == 0:
+                    self.display.exit("API: unable to retrieve book chapters.")
+                response = response.json()
+                result.extend(response["results"])
+                next_url = response.get("next")
+            return result
+
+        if not page:
+            page = f"{SAFARI_BASE_URL}/api/v2/epubs/urn:orm:book:{self.book_id}/files/"
+        response = self.requests_provider(page)
         if response == 0:
             self.display.exit("API: unable to retrieve book chapters.")
 
@@ -822,19 +736,18 @@ class SafariBooks:
         if response["count"] > sys.getrecursionlimit():
             sys.setrecursionlimit(response["count"])
 
-        result = []
         result.extend(
-            [
-                c
-                for c in response["results"]
-                if "cover" in c["filename"] or "cover" in c["title"]
-            ]
+            [c for c in response["results"] if "cover" in c["filename"].lower()]
         )
         for c in result:
             del response["results"][response["results"].index(c)]
+            c["title"] = "Cover"
+            self.cover = True
 
         result += response["results"]
-        return result + (self.get_book_chapters(page + 1) if response["next"] else [])
+        return result + (
+            self.get_book_chapters(response["next"]) if response["next"] else []
+        )
 
     def get_default_cover(self):
         response = self.requests_provider(self.book_info["cover"], stream=True)
@@ -846,7 +759,7 @@ class SafariBooks:
 
         file_ext = response.headers["Content-Type"].split("/")[-1]
         with open(
-            os.path.join(self.image_manager.images_path, "default_cover." + file_ext), "wb"
+            os.path.join(self.images_path, "default_cover." + file_ext), "wb"
         ) as i:
             for chunk in response.iter_content(1024):
                 i.write(chunk)
@@ -864,8 +777,9 @@ class SafariBooks:
 
         root = None
         try:
+            if response.text and "early release" in response.text.lower():
+                self.early_release = True
             root = html.fromstring(response.text, base_url=SAFARI_BASE_URL)
-
         except (html.etree.ParseError, html.etree.ParserError) as parsing_error:
             self.display.error(parsing_error)
             self.display.exit(
@@ -889,7 +803,7 @@ class SafariBooks:
                 if any(
                     x in link for x in ["cover", "images", "graphics"]
                 ) or self.is_image_link(link):
-                    image = self.image_manager.local_ref(link)
+                    image = os.path.basename(link)
                     return "Images/" + image
 
                 return link.replace(".html", ".xhtml")
@@ -1087,17 +1001,21 @@ class SafariBooks:
         self.css_path = os.path.join(oebps, "Styles")
         if os.path.isdir(self.css_path):
             self.display.log("CSSs directory already exists: %s" % self.css_path)
-
         else:
             os.makedirs(self.css_path)
             self.display.css_ad_info.value = 1
 
-        self.image_manager.images_path = os.path.join(oebps, "Images")
-        if os.path.isdir(self.image_manager.images_path):
-            self.display.log("Images directory already exists: %s" % self.image_manager.images_path)
-
+        self.font_path = os.path.join(oebps, "fonts")
+        if os.path.isdir(self.font_path):
+            self.display.log("Fonts directory already exists: %s" % self.font_path)
         else:
-            os.makedirs(self.image_manager.images_path)
+            os.makedirs(self.font_path)
+
+        self.images_path = os.path.join(oebps, "Images")
+        if os.path.isdir(self.images_path):
+            self.display.log("Images directory already exists: %s" % self.images_path)
+        else:
+            os.makedirs(self.images_path)
             self.display.images_ad_info.value = 1
 
     def save_page_html(self, contents):
@@ -1110,8 +1028,8 @@ class SafariBooks:
         # self.display.log("Created: %s" % self.filename)
 
     def get(self):
+        self.early_release = False
         len_books = len(self.book_chapters)
-
         for _ in range(len_books):
             if not len(self.chapters_queue):
                 return
@@ -1119,32 +1037,21 @@ class SafariBooks:
             first_page = len_books == len(self.chapters_queue)
 
             next_chapter = self.chapters_queue.pop(0)
-            self.chapter_title = next_chapter["title"]
-            self.filename = next_chapter["filename"]
+            self.filename = os.path.basename(next_chapter["reference_id"])
+            self.chapter_title = self.filename
 
-            asset_base_url = next_chapter['asset_base_url']
-            api_v2_detected = False
-            if 'v2' in next_chapter['content']:
-                asset_base_url = SAFARI_BASE_URL + "/api/v2/epubs/urn:orm:book:{}/files".format(self.book_id)
-                api_v2_detected = True
-
-            if "images" in next_chapter and len(next_chapter["images"]):
-                for img_url in next_chapter['images']:
-                    if api_v2_detected:
-                        self.image_manager.add_image_base_url(asset_base_url)
-                    else:
-                        self.image_manager.add_image_base_url(next_chapter['asset_base_url'])
-                    self.image_manager.add_image_ref(img_url)
+            related_assets = next_chapter.get("related_assets") or next_chapter
+            if "images" in related_assets and len(related_assets["images"]):
+                for img_url in related_assets["images"]:
+                    self.image_queue.append(img_url)
 
             # Stylesheets
             self.chapter_stylesheets = []
-            if "stylesheets" in next_chapter and len(next_chapter["stylesheets"]):
-                self.chapter_stylesheets.extend(
-                    x["url"] for x in next_chapter["stylesheets"]
-                )
+            if "stylesheets" in related_assets and len(related_assets["stylesheets"]):
+                self.chapter_stylesheets.extend(related_assets["stylesheets"])
 
-            if "site_styles" in next_chapter and len(next_chapter["site_styles"]):
-                self.chapter_stylesheets.extend(next_chapter["site_styles"])
+            if "site_styles" in related_assets and len(related_assets["site_styles"]):
+                self.chapter_stylesheets.extend(related_assets["site_styles"])
 
             if os.path.isfile(
                 os.path.join(
@@ -1169,11 +1076,9 @@ class SafariBooks:
                     self.display.book_ad_info = 2
 
             else:
-                page = self.get_html(next_chapter["content"])
+                page = self.get_html(next_chapter["content_url"])
                 if page is not None:
-                    self.save_page_html(
-                        self.parse_html(page, first_page)
-                    )
+                    self.save_page_html(self.parse_html(page, first_page))
 
             self.display.state(len_books, len_books - len(self.chapters_queue))
 
@@ -1213,32 +1118,90 @@ class SafariBooks:
         self.css_done_queue.put(1)
         self.display.state(len(self.css), self.css_done_queue.qsize())
 
+    def download_image(self, img_ref: str) -> bool:
+        """Figure out where the image is, and download it"""
+        image_name = os.path.basename(img_ref)
+        image_path = os.path.join(self.images_path, image_name)
+        if os.path.isfile(image_path):
+            if not self.display.images_ad_info.value:
+                self.display.info(
+                    (
+                        "File `%s` already exists.\n"
+                        "    If you want to download again all the images,\n"
+                        "    please delete the output directory '"
+                        + self.display.output_dir
+                        + "'"
+                        " and restart the program."
+                    )
+                    % image_name
+                )
+                return False
+
+        image_dir = os.path.dirname(image_path)
+        if not os.path.exists(image_dir):
+            os.makedirs(image_dir)
+
+        response = self.requests_provider(img_ref, stream=True)
+        if response == 0:
+            self.display.error(
+                "Error trying to retrieve this image: %s\n    From: %s"
+                % (image_name, img_ref)
+            )
+            return True
+
+        try_again = False
+        good_dog = False
+        with open(image_path, "wb") as img:
+            for chunk in response.iter_content(1024):
+                if not good_dog:
+                    check = "".join([chr(int(b)) for b in chunk[:128]]).lower()
+                    if "not found" in check or "html" in check:
+                        try_again = True
+                        break
+                    good_dog = True
+                img.write(chunk)
+        if try_again:
+            os.remove(image_path)
+
+        return True
 
     def _thread_download_images(self, url):
-        if self.image_manager.download_image(url):
+        if self.download_image(url):
             self.display.images_ad_info.value = 1
         self.images_done_queue.put(1)
-        self.display.state(self.image_manager.count, self.images_done_queue.qsize())
+        self.display.state(len(self.image_queue), self.images_done_queue.qsize())
 
     def thread_download_fonts(self):
-            response = self.requests_provider(SAFARI_BASE_URL + "/api/v2/epubs/urn:orm:book:{}/files/?limit=100".format(self.book_id))
-            if response != 0:
-                resp_json = response.json()
-                for file in resp_json["results"]:
-                    if file["media_type"] == "font/otf":
-                        response_file = self.requests_provider(file["url"])
-                        if response_file == 0:
-                            self.display.error("Error trying to retrieve this font: %s\n    From: %s" % (file["filename"], file["url"]))
-                            return
-                        head, tail = os.path.split(file["full_path"])
-                        os_path = os.path.join(self.css_path,head) 
-                        if not os.path.isdir(os_path):
-                            os.makedirs(os_path)
+        for file in self.book_files:
+            if file["media_type"] in ("font/otf", "font/ttf"):
+                if not os.path.isdir(self.font_path):
+                    os.makedirs(self.font_path)
+                _, tail = os.path.split(file["full_path"])
+                font_path = os.path.join(self.font_path, tail)
+                if os.path.isfile(font_path):
+                    self.display.info(
+                        (
+                            "File `%s` already exists.\n"
+                            "    If you want to download again all the images,\n"
+                            "    please delete the output directory '"
+                            + self.display.output_dir
+                            + "'"
+                            " and restart the program."
+                        )
+                        % font_path
+                    )
+                    return False
 
-                        with open(os.path.join(os_path,tail), 'wb') as s:
-                            s.write(response_file.content)
-            else:
-                self.display.error("Error trying to retrieve files\n")
+                response_file = self.requests_provider(file["url"])
+                if response_file == 0:
+                    self.display.error(
+                        "Error trying to retrieve this font: %s\n    From: %s"
+                        % (file["filename"], file["url"])
+                    )
+                    return False
+
+                with open(font_path, "wb") as s:
+                    s.write(response_file.content)
 
     def _start_multiprocessing(self, operation, full_queue):
         if len(full_queue) > 5:
@@ -1264,15 +1227,18 @@ class SafariBooks:
 
     def collect_images(self):
         if self.display.book_ad_info == 2:
-            self.display.info("Some of the book contents were already downloaded.\n"
-                              "    If you want to be sure that all the images will be downloaded,\n"
-                              "    please delete the output directory '" + self.BOOK_PATH +
-                              "' and restart the program.")
+            self.display.info(
+                "Some of the book contents were already downloaded.\n"
+                "    If you want to be sure that all the images will be downloaded,\n"
+                "    please delete the output directory '"
+                + self.BOOK_PATH
+                + "' and restart the program."
+            )
 
         self.display.state_status.value = -1
 
         # "self._start_multiprocessing" seems to cause problem. Switching to mono-thread download.
-        for image_url in self.image_manager.image_refs:
+        for image_url in self.image_queue:
             self._thread_download_images(image_url)
 
     def create_content_opf(self):
@@ -1281,7 +1247,9 @@ class SafariBooks:
         manifest = []
         spine = []
         for c in self.book_chapters:
-            c["filename"] = c["filename"].replace(".html", ".xhtml")
+            c["filename"] = os.path.basename(c["reference_id"]).replace(
+                ".html", ".xhtml"
+            )
             item_id = escape("".join(c["filename"].split(".")[:-1]))
             manifest.append(
                 '<item id="{0}" href="{1}" media-type="application/xhtml+xml" />'.format(
@@ -1290,8 +1258,8 @@ class SafariBooks:
             )
             spine.append('<itemref idref="{0}"/>'.format(item_id))
 
-        for root, _, files in os.walk(self.image_manager.images_path):
-            chop = slice(len(self.image_manager.images_path) + 1, len(root))
+        for root, _, files in os.walk(self.images_path):
+            chop = slice(len(self.images_path) + 1, len(root))
             root = root[chop]
             for name in files:
                 i = os.path.join(root, name)
@@ -1312,21 +1280,31 @@ class SafariBooks:
 
         authors = "\n".join(
             '<dc:creator opf:file-as="{0}" opf:role="aut">{0}</dc:creator>'.format(
-                escape(aut.get("name", "n/d"))
+                escape(aut)
             )
             for aut in self.book_info.get("authors", [])
         )
 
+        categories = self.book_info.get("categories", [[]])[0]
+        if self.early_release:
+            categories.append("early release")
         subjects = "\n".join(
-            "<dc:subject>{0}</dc:subject>".format(escape(sub.get("name", "n/d")))
-            for sub in self.book_info.get("subjects", [])
+            "<dc:subject>{0}</dc:subject>".format(escape(sub)) for sub in categories
         )
+
+        description = None
+        if "descriptions" in self.book_info:
+            for format in ("text/html", "text/plain"):
+                description = self.book_info["descriptions"].get(format)
+                if description:
+                    break
+        description = description or self.book_info.get("description") or "Missing."
 
         return self.CONTENT_OPF.format(
             (self.book_info.get("isbn", self.book_id)),
             escape(self.book_title),
             authors,
-            escape(self.book_info.get("description", "Missing.")),
+            escape(description),
             subjects,
             ", ".join(
                 escape(pub.get("name", ""))
@@ -1337,7 +1315,9 @@ class SafariBooks:
             self.cover,
             "\n".join(manifest),
             "\n".join(spine),
-            self.book_chapters[0]["filename"].replace(".html", ".xhtml"),
+            os.path.basename(self.book_chapters[0]["reference_id"]).replace(
+                ".html", ".xhtml"
+            ),
         )
 
     @staticmethod
@@ -1368,6 +1348,12 @@ class SafariBooks:
         return r, c, mx
 
     def create_toc(self):
+        response = self.requests_provider(
+            f"{SAFARI_BASE_URL}/api/v2/epubs/urn:orm:book:{self.book_id}/files/toc.ncx"
+        )
+        if response:
+            return response.text
+
         response = self.requests_provider(urljoin(self.api_url, "toc/"))
         if response == 0:
             self.display.exit(
@@ -1391,7 +1377,7 @@ class SafariBooks:
             max_depth,
             self.book_title,
             ", ".join(aut.get("name", "") for aut in self.book_info.get("authors", [])),
-            navmap
+            navmap,
         )
 
     def create_epub(self):
@@ -1490,12 +1476,14 @@ def main():
 
     args_parsed = arguments.parse_args()
     if args_parsed.cred or args_parsed.login:
-        print("WARNING: Due to recent changes on ORLY website, \n" \
-                "the `--cred` and `--login` options are temporarily disabled.\n"
-                "    Please use the `cookies.json` file to authenticate your account.\n"
-                "    See: https://github.com/lorenzodifuccia/safaribooks/issues/358")
+        print(
+            "WARNING: Due to recent changes on ORLY website, \n"
+            "the `--cred` and `--login` options are temporarily disabled.\n"
+            "    Please use the `cookies.json` file to authenticate your account.\n"
+            "    See: https://github.com/lorenzodifuccia/safaribooks/issues/358"
+        )
         arguments.exit()
-        
+
         # user_email = ""
         # pre_cred = ""
 
